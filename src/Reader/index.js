@@ -166,6 +166,13 @@ function addParameterValueProp(node, obj, prop, options = {}) {
       childExpression.type = 'propertyname';
       childExpression.typeHint = parseOptions.typeHint;
       childExpression.value = childNode.textContent.trim();
+    } else if (
+      childNode.namespaceURI === 'http://www.opengis.net/ogc' &&
+      childNode.localName === 'Add'
+    ) {
+      // implement sld Add Function
+      readNode(childNode, childExpression);
+      childExpression.value = childNode.querySelector('Literal').textContent;
     } else if (childNode.nodeName === '#cdata-section') {
       // Add CDATA section text content untrimmed.
       childExpression.type = 'literal';
@@ -311,6 +318,10 @@ const SymbParsers = {
     addParameterValue(element, obj, prop, 'styling'),
   SvgParameter: (element, obj, prop) =>
     addParameterValue(element, obj, prop, 'styling'),
+  Geometry: addProp,
+  Function: (element, obj, prop) =>
+    addParameterValue(element, obj, prop, 'function'),
+  Add: addProp,
 };
 
 /**
