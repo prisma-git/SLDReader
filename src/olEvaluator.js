@@ -1,6 +1,8 @@
 // This module contains an evaluate function that takes an SLD expression and a feature and outputs the value for that feature.
 // Constant expressions are returned as-is.
 
+import { LineString } from 'ol/geom';
+
 /**
  * Check if an expression depends on feature properties.
  * @param {object} expression OGC expression object.
@@ -86,7 +88,24 @@ export default function evaluate(
   } else if (expression.type === 'function') {
     // Todo: evaluate function expression.
     // For now, return null.
-    value = null;
+
+    if (feature && expression.function.endangle) {
+      const geometry = feature.getGeometry();
+      if (!geometry || !(geometry instanceof LineString)) {
+        return expression.value;
+      }
+      const coordinates = geometry.getCoordinates();
+      const [start, end] = coordinates.slice(
+        coordinates.length - 2,
+        coordinates.length
+      );
+      const dx = end[1] - start[1];
+      const dy = end[0] - start[0];
+      const rotation = Math.atan2(dy, dx);
+      value = rotation * (180 / Math.PI);
+    } else {
+      value = null;
+    }
   }
 
   // Do not substitute default value if the value is numeric zero.
