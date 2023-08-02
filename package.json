@@ -20,7 +20,8 @@
     "test:watch": "karma start --no-single-run karma.conf.js",
     "test": "karma  start karma.conf.js",
     "version": "npm run build && git add -Af dist",
-    "watch": "rollup -c -w"
+    "watch": "rollup -c -w",
+    "prepare": "npm run build"
   },
   "bugs": {
     "url": "https://github.com/NieuwlandGeo/SLDReader/issues"
