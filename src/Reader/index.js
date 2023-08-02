@@ -173,6 +173,8 @@ function addParameterValueProp(node, obj, prop, options = {}) {
       // implement sld Add Function
       readNode(childNode, childExpression);
       childExpression.value = childNode.querySelector('Literal').textContent;
+      childExpression.type = 'function';
+      childExpression.typeHint = parseOptions.typeHint;
     } else if (childNode.nodeName === '#cdata-section') {
       // Add CDATA section text content untrimmed.
       childExpression.type = 'literal';

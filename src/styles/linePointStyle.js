@@ -40,7 +40,9 @@ function getLinePointStyle(symbolizer, feature) {
   const geomType = geom.getType();
   if (geomType === 'LineString') {
     pointStyle = getPointStyle(symbolizer, feature);
-    pointStyle.setGeometry(new Point(getLineMidpoint(geom)));
+    if (!symbolizer.geometry) {
+      pointStyle.setGeometry(new Point(getLineMidpoint(geom)));
+    }
   } else if (geomType === 'MultiLineString') {
     const lineStrings = geom.getLineStrings();
     const multiPointCoords = lineStrings.map(getLineMidpoint);

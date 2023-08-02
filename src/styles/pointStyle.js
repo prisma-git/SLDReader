@@ -1,5 +1,5 @@
 import { Style } from 'ol/style';
-
+import { Point, Polygon } from 'ol/geom';
 import {
   IMAGE_LOADING,
   IMAGE_LOADED,
@@ -96,6 +96,7 @@ function pointStyle(pointsymbolizer) {
 }
 
 const cachedPointStyle = memoizeStyleFunction(pointStyle);
+let originalOnlineResource;
 
 /**
  * @private
@@ -111,7 +112,35 @@ function getPointStyle(symbolizer, feature, getProperty) {
     return emptyStyle;
   }
 
-  const olStyle = cachedPointStyle(symbolizer);
+  let olStyle;
+  if (
+    symbolizer.graphic.externalgraphic &&
+    symbolizer.graphic.externalgraphic.onlineresource
+  ) {
+    if (originalOnlineResource) {
+      symbolizer.graphic.externalgraphic.onlineresource =
+        originalOnlineResource;
+      originalOnlineResource = undefined;
+    }
+    const imageUrl = symbolizer.graphic.externalgraphic.onlineresource;
+    if (imageUrl.search(/\${(.*?)}/) >= 0) {
+      originalOnlineResource = imageUrl;
+      const matches = Array.from(imageUrl.matchAll(/\${(.*?)}/g));
+      matches.forEach(match => {
+        const property = feature.get(match[1]);
+        if (property) {
+          symbolizer.graphic.externalgraphic.onlineresource = imageUrl.replace(
+            match[0],
+            property
+          );
+        }
+      });
+      olStyle = pointStyle(symbolizer);
+    }
+  }
+  if (!olStyle) {
+    olStyle = cachedPointStyle(symbolizer);
+  }
 
   // Reset previous calculated point geometry left by evaluating point style for a line or polygon feature.
   olStyle.setGeometry(null);
@@ -155,6 +184,23 @@ function getPointStyle(symbolizer, feature, getProperty) {
     // Note: OL angles are in radians.
     const rotationRadians = (Math.PI * rotationDegrees) / 180.0;
     olImage.setRotation(rotationRadians);
+  }
+
+  // --- geometry ---
+  const geometry = symbolizer.geometry;
+  if (geometry && geometry.function) {
+    const featureGeometry = feature.getGeometry();
+    if (!featureGeometry) {
+      return olStyle;
+    }
+    if (geometry.function.endpoint) {
+      olStyle.setGeometry(new Point(featureGeometry.getLastCoordinate()));
+    } else if (
+      geometry.function.interiorpoint &&
+      featureGeometry instanceof Polygon
+    ) {
+      olStyle.setGeometry(new Point(featureGeometry.getInteriorPoint()));
+    }
   }
 
   // --- Update stroke and fill ---
