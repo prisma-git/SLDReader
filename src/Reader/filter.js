@@ -26,25 +26,6 @@ const COMPARISON_NAMES = BINARY_COMPARISON_NAMES.concat([
   'PropertyIsBetween',
 ]);
 
-/**
- * @private
- * @param {string} localName
- *
- * @return null|string
- */
-function getChildTextContent(node, localName) {
-  const propertyNameElement = node
-    .getElementsByTagNameNS(node.namespaceURI, localName)
-    .item(0);
-  if (!propertyNameElement) {
-    return null;
-  }
-  if (propertyNameElement.parentNode !== node) {
-    throw new Error('Expected direct descant');
-  }
-  return propertyNameElement ? propertyNameElement.textContent.trim() : null;
-}
-
 function isComparison(element) {
   return COMPARISON_NAMES.includes(element.localName);
 }
@@ -60,18 +41,18 @@ function isBinary(element) {
  *
  * @return {object}
  */
-function createComparison(element) {
+function createComparison(element, addParameterValueProp) {
   if (BINARY_COMPARISON_NAMES.includes(element.localName)) {
-    return createBinaryFilterComparison(element);
+    return createBinaryFilterComparison(element, addParameterValueProp);
   }
   if (element.localName === 'PropertyIsBetween') {
-    return createIsBetweenComparison(element);
+    return createIsBetweenComparison(element, addParameterValueProp);
   }
   if (element.localName === 'PropertyIsNull') {
-    return createIsNullComparison(element);
+    return createIsNullComparison(element, addParameterValueProp);
   }
   if (element.localName === 'PropertyIsLike') {
-    return createIsLikeComparison(element);
+    return createIsLikeComparison(element, addParameterValueProp);
   }
   throw new Error(`Unknown comparison element ${element.localName}`);
 }
@@ -83,18 +64,26 @@ function createComparison(element) {
  *
  * @return {object}
  */
-function createBinaryFilterComparison(element) {
-  const propertyname = getChildTextContent(element, 'PropertyName');
-  const literal = getChildTextContent(element, 'Literal');
-
-  return {
+function createBinaryFilterComparison(element, addParameterValueProp) {
+  const obj = {
     type: TYPE_COMPARISON,
     operator: element.localName.toLowerCase(),
-    propertyname,
-    literal,
     // Match case attribute is true by default, so only make it false if the attribute value equals 'false'.
     matchcase: element.getAttribute('matchCase') !== 'false',
   };
+
+  // Parse child expressions, and add them to the comparison object.
+  const parsed = {};
+  addParameterValueProp(element, parsed, 'expressions', {
+    concatenateLiterals: false,
+  });
+
+  if (parsed.expressions && parsed.expressions.children) {
+    obj.expression1 = parsed.expressions.children[0];
+    obj.expression2 = parsed.expressions.children[1];
+  }
+
+  return obj;
 }
 
 /**
@@ -104,22 +93,17 @@ function createBinaryFilterComparison(element) {
  *
  * @return {object}
  */
-function createIsLikeComparison(element) {
-  const propertyname = getChildTextContent(element, 'PropertyName');
-  const literal = getChildTextContent(element, 'Literal');
-
+function createIsLikeComparison(element, addParameterValueProp) {
+  // A like comparison is a binary comparison expression, with extra attributes.
+  const obj = createBinaryFilterComparison(element, addParameterValueProp);
   return {
-    type: TYPE_COMPARISON,
-    operator: element.localName.toLowerCase(),
-    propertyname,
-    literal,
+    ...obj,
     wildcard: element.getAttribute('wildCard'),
     singlechar: element.getAttribute('singleChar'),
     escapechar: element.getAttribute('escapeChar'),
-    // Match case attribute is true by default, so only make it false if the attribute value equals 'false'.
-    matchcase: element.getAttribute('matchCase') !== 'false',
   };
 }
+
 /**
  * factory for element type PropertyIsNullType
  * @private
@@ -127,13 +111,16 @@ function createIsLikeComparison(element) {
  *
  * @return {object}
  */
-function createIsNullComparison(element) {
-  const propertyname = getChildTextContent(element, 'PropertyName');
+function createIsNullComparison(element, addParameterValueProp) {
+  const parsed = {};
+  addParameterValueProp(element, parsed, 'expressions', {
+    concatenateLiterals: false,
+  });
 
   return {
     type: TYPE_COMPARISON,
     operator: element.localName.toLowerCase(),
-    propertyname,
+    expression: parsed.expressions,
   };
 }
 /**
@@ -143,19 +130,28 @@ function createIsNullComparison(element) {
  *
  * @return {object}
  */
-function createIsBetweenComparison(element) {
-  const propertyname = getChildTextContent(element, 'PropertyName');
-  const lowerboundary = getChildTextContent(element, 'LowerBoundary');
-  const upperboundary = getChildTextContent(element, 'UpperBoundary');
-  return {
+function createIsBetweenComparison(element, addParameterValueProp) {
+  const obj = {
     type: TYPE_COMPARISON,
     operator: element.localName.toLowerCase(),
-    lowerboundary,
-    upperboundary,
-    propertyname,
     // Match case attribute is true by default, so only make it false if the attribute value equals 'false'.
     matchcase: element.getAttribute('matchCase') !== 'false',
   };
+
+  // Parse child expressions, and add them to the comparison object.
+  const parsed = {};
+  addParameterValueProp(element, parsed, 'expressions', {
+    concatenateLiterals: false,
+  });
+
+  if (parsed.expressions && parsed.expressions.children) {
+    // According to spec, the child elements should be expression, lower boundary, upper boundary.
+    obj.expression = parsed.expressions.children[0];
+    obj.lowerboundary = parsed.expressions.children[1];
+    obj.upperboundary = parsed.expressions.children[2];
+  }
+
+  return obj;
 }
 
 /**
@@ -165,11 +161,17 @@ function createIsBetweenComparison(element) {
  *
  * @return {object}
  */
-function createBinaryLogic(element) {
+function createBinaryLogic(element, addParameterValueProp) {
   const predicates = [];
   for (let n = element.firstElementChild; n; n = n.nextElementSibling) {
-    if (isComparison(n)) {
-      predicates.push(createComparison(n));
+    if (n && isComparison(n)) {
+      predicates.push(createComparison(n, addParameterValueProp));
+    }
+    if (n && isBinary(n)) {
+      predicates.push(createBinaryLogic(n, addParameterValueProp));
+    }
+    if (n && n.localName.toLowerCase() === 'not') {
+      predicates.push(createUnaryLogic(n, addParameterValueProp));
     }
   }
   return {
@@ -185,14 +187,17 @@ function createBinaryLogic(element) {
  *
  * @return {object}
  */
-function createUnaryLogic(element) {
+function createUnaryLogic(element, addParameterValueProp) {
   let predicate = null;
   const childElement = element.firstElementChild;
   if (childElement && isComparison(childElement)) {
-    predicate = createComparison(childElement);
+    predicate = createComparison(childElement, addParameterValueProp);
   }
   if (childElement && isBinary(childElement)) {
-    predicate = createBinaryLogic(childElement);
+    predicate = createBinaryLogic(childElement, addParameterValueProp);
+  }
+  if (childElement && childElement.localName.toLowerCase() === 'not') {
+    predicate = createUnaryLogic(childElement, addParameterValueProp);
   }
   return {
     type: element.localName.toLowerCase(),
@@ -206,17 +211,17 @@ function createUnaryLogic(element) {
  *
  * @return {Filter}
  */
-export default function createFilter(element) {
+export default function createFilter(element, addParameterValueProp) {
   let filter = {};
   for (let n = element.firstElementChild; n; n = n.nextElementSibling) {
     if (isComparison(n)) {
-      filter = createComparison(n);
+      filter = createComparison(n, addParameterValueProp);
     }
     if (isBinary(n)) {
-      filter = createBinaryLogic(n);
+      filter = createBinaryLogic(n, addParameterValueProp);
     }
     if (n.localName.toLowerCase() === 'not') {
-      filter = createUnaryLogic(n);
+      filter = createUnaryLogic(n, addParameterValueProp);
     }
     if (n.localName.toLowerCase() === 'featureid') {
       filter.type = 'featureid';
@@ -228,10 +233,25 @@ export default function createFilter(element) {
 }
 
 /**
+ * Generic expression used in SLDReader objects.
+ * @typedef Expression
+ * @name Expression
+ * @description Modeled after [SvgParameterType](https://schemas.opengis.net/se/1.1.0/Symbolizer.xsd).
+ * Can be either a primitive value (string,integer,boolean), or an object with these properties:
+ * @property {string} type One of 'literal', 'propertyname', or 'function'.
+ * @property {string} [typeHint] Optional type hint, used when evaluating the expression. Defaults to 'string'. Can be 'number'.
+ * @property {any} [value] The primitive type representing the value of a literal expresion,
+ * or a string representing the name of a propertyname expression .
+ * @property {string} [name] Required for function expressions. Contains the function name.
+ * @property {any} [fallbackValue] Optional fallback value when function evaluation returns null.
+ * @property {Array<Expression>} [params] Required array of function parameters for function expressions.
+ */
+
+/**
  * A filter predicate.
  * @typedef Filter
  * @name Filter
- * @description [filter operators](http://schemas.opengis.net/filter/1.1.0/filter.xsd), see also
+ * @description [filter operators](https://schemas.opengis.net/filter/2.0/filter.xsd), see also
  * [geoserver](http://docs.geoserver.org/stable/en/user/styling/sld/reference/filters.html)
  * @property {string} type Can be 'comparison', 'and', 'or', 'not', or 'featureid'.
  * @property {Array<string>} [fids] An array of feature id's. Required for type='featureid'.
@@ -244,15 +264,16 @@ export default function createFilter(element) {
  * 'propertyisgreaterthanorequalto',
  * 'propertyislike',
  * 'propertyisbetween'
+ * 'propertyisnull'
  * @property {Filter[]} [predicates] Required for type='and' or type='or'.
  * An array of filter predicates that must all evaluate to true for 'and', or
  * for which at least one must evaluate to true for 'or'.
  * @property {Filter} [predicate] Required for type='not'. A single predicate to negate.
- * @property {string} [propertyname] Required for type='comparison'.
- * @property {string} [literal] A literal value to use in a comparison,
- * required for type='comparison'.
- * @property {string} [lowerboundary] Lower boundary, required for operator='propertyisbetween'.
- * @property {string} [upperboundary] Upper boundary, required for operator='propertyisbetween'.
+ * @property {Expression} [expression1] First expression required for boolean comparison filters.
+ * @property {Expression} [expression2] Second expression required for boolean comparison filters.
+ * @property {Expression} [expression] Expression required for unary comparison filters.
+ * @property {Expression} [lowerboundary] Lower boundary expression, required for operator='propertyisbetween'.
+ * @property {Expression} [upperboundary] Upper boundary expression, required for operator='propertyisbetween'.
  * @property {string} [wildcard] Required wildcard character for operator='propertyislike'.
  * @property {string} [singlechar] Required single char match character,
  * required for operator='propertyislike'.

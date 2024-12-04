@@ -77,11 +77,14 @@ function addNumericProp(node, obj, prop) {
  * Simplifies array of ogc:Expressions. If all expressions are literals, they will be concatenated into a string.
  * If the array contains only one expression, it will be returned.
  * If it's not an array, return unmodified.
+ * @private
  * @param {Array<OGCExpression>} expressions An array of ogc:Expression objects.
  * @param {string} typeHint Expression type. Choose 'string' or 'number'.
+ * @param {boolean} concatenateLiterals When true, and when all expressions are literals,
+ * concatenate all literal expressions into a single string.
  * @return {Array<OGCExpression>|OGCExpression|string} Simplified version of the expression array.
  */
-function simplifyChildExpressions(expressions, typeHint) {
+function simplifyChildExpressions(expressions, typeHint, concatenateLiterals) {
   if (!Array.isArray(expressions)) {
     return expressions;
   }
@@ -97,11 +100,13 @@ function simplifyChildExpressions(expressions, typeHint) {
     .filter(expression => expression !== '');
 
   // If expression children are all literals, concatenate them into a string.
-  const allLiteral = simplifiedExpressions.every(
-    expr => typeof expr !== 'object' || expr === null
-  );
-  if (allLiteral) {
-    return simplifiedExpressions.join('');
+  if (concatenateLiterals) {
+    const allLiteral = simplifiedExpressions.every(
+      expr => typeof expr !== 'object' || expr === null
+    );
+    if (allLiteral) {
+      return simplifiedExpressions.join('');
+    }
   }
 
   // If expression only has one child, return child instead.
@@ -140,12 +145,15 @@ function simplifyChildExpressions(expressions, typeHint) {
  * @param {object} [options.skipEmptyNodes] Default true. If true, emtpy (whitespace-only) text nodes will me omitted in the result.
  * @param {object} [options.forceLowerCase] Default true. If true, convert prop name to lower case before adding it to obj.
  * @param {object} [options.typeHint] Default 'string'. When set to 'number', a simple literal value will be converted to a number.
+ * @param {object} [options.concatenateLiterals] Default true. When true, and when all expressions are literals,
+ * concatenate all literal expressions into a single string.
  */
 function addParameterValueProp(node, obj, prop, options = {}) {
   const defaultParseOptions = {
     skipEmptyNodes: true,
     forceLowerCase: true,
     typeHint: 'string',
+    concatenateLiterals: true,
   };
 
   const parseOptions = {
@@ -168,13 +176,52 @@ function addParameterValueProp(node, obj, prop, options = {}) {
       childExpression.value = childNode.textContent.trim();
     } else if (
       childNode.namespaceURI === 'http://www.opengis.net/ogc' &&
-      childNode.localName === 'Add'
+      childNode.localName === 'Function'
     ) {
-      // implement sld Add Function
-      readNode(childNode, childExpression);
-      childExpression.value = childNode.querySelector('Literal').textContent;
+      const functionName = childNode.getAttribute('name');
+      const fallbackValue = childNode.getAttribute('fallbackValue') || null;
       childExpression.type = 'function';
-      childExpression.typeHint = parseOptions.typeHint;
+      childExpression.name = functionName;
+      childExpression.fallbackValue = fallbackValue;
+
+      // Parse function parameters.
+      // Parse child expressions, and add them to the comparison object.
+      const parsed = {};
+      addParameterValueProp(childNode, parsed, 'params', {
+        concatenateLiterals: false,
+      });
+      if (Array.isArray(parsed.params.children)) {
+        // Case 0 or more than 1 children.
+        childExpression.params = parsed.params.children;
+      } else {
+        // Special case of 1 parameter.
+        // An array containing one expression is simplified into the expression itself.
+        childExpression.params = [parsed.params];
+      }
+    } else if (
+      childNode.localName === 'Add' ||
+      childNode.localName === 'Sub' ||
+      childNode.localName === 'Mul' ||
+      childNode.localName === 'Div'
+    ) {
+      // Convert mathematical operators to builtin function expressions.
+      childExpression.type = 'function';
+      childExpression.name = `__fe:${childNode.localName}__`;
+      childExpression.typeHint = 'number';
+      // Parse function parameters.
+      // Parse child expressions, and add them to the comparison object.
+      const parsed = {};
+      addParameterValueProp(childNode, parsed, 'params', {
+        concatenateLiterals: false,
+      });
+      if (Array.isArray(parsed.params.children)) {
+        // Case 0 or more than 1 children.
+        childExpression.params = parsed.params.children;
+      } else {
+        // Special case of 1 parameter.
+        // An array containing one expression is simplified into the expression itself.
+        childExpression.params = [parsed.params];
+      }
     } else if (childNode.nodeName === '#cdata-section') {
       // Add CDATA section text content untrimmed.
       childExpression.type = 'literal';
@@ -202,7 +249,8 @@ function addParameterValueProp(node, obj, prop, options = {}) {
   // For example: if they are all literals --> concatenate into string.
   let simplifiedValue = simplifyChildExpressions(
     childExpressions,
-    parseOptions.typeHint
+    parseOptions.typeHint,
+    parseOptions.concatenateLiterals
   );
 
   // Convert simple string value to number if type hint is number.
@@ -270,7 +318,7 @@ function addParameterValue(element, obj, prop, parameterGroup) {
 
 const FilterParsers = {
   Filter: (element, obj) => {
-    obj.filter = createFilter(element);
+    obj.filter = createFilter(element, addParameterValueProp);
   },
   ElseFilter: (element, obj) => {
     obj.elsefilter = true;
@@ -433,8 +481,9 @@ export default function Reader(sld) {
  * @name Rule
  * @description a typedef for Rule to match a feature: {@link http://schemas.opengis.net/se/1.1.0/FeatureStyle.xsd xsd}
  * @property {string} name rule name
- * @property {Filter[]} [filter]
- * @property {boolean} [elsefilter]
+ * @property {Filter} [filter] Optional filter expression for the rule.
+ * @property {boolean} [elsefilter] Set this to true when rule has no filter expression
+ * to catch everything not passing any other filter.
  * @property {integer} [minscaledenominator]
  * @property {integer} [maxscaledenominator]
  * @property {PolygonSymbolizer} [polygonsymbolizer]
@@ -448,9 +497,9 @@ export default function Reader(sld) {
  * @description a typedef for [PolygonSymbolizer](http://schemas.opengis.net/se/1.1.0/Symbolizer.xsd), see also
  * [geoserver docs](http://docs.geoserver.org/stable/en/user/styling/sld/reference/polygonsymbolizer.html)
  * @property {Object} fill
- * @property {array} fill.css one object per CssParameter with props name (camelcased) & value
+ * @property {Object<Expression>} fill.styling one object per SvgParameter with props name (camelCased)
  * @property {Object} stroke
- * @property {Object[]} stroke.css with camelcased name & value
+ * @property {Object<Expression>} stroke.styling with camelcased name & value
  * */
 
 /**
@@ -459,7 +508,7 @@ export default function Reader(sld) {
  * @description a typedef for [LineSymbolizer](http://schemas.opengis.net/se/1.1.0/Symbolizer.xsd), see also
  * [geoserver docs](http://docs.geoserver.org/stable/en/user/styling/sld/reference/linesymbolizer.html#sld-reference-linesymbolizer)
  * @property {Object} stroke
- * @property {Object[]} stroke.css one object per CssParameter with props name (camelcased) & value
+ * @property {Object<Expression>} stroke.styling one object per SvgParameter with props name (camelCased)
  * @property {Object} graphicstroke
  * @property {Object} graphicstroke.graphic
  * @property {Object} graphicstroke.graphic.mark
@@ -484,6 +533,6 @@ export default function Reader(sld) {
  * @property {Object} graphic.mark.fill
  * @property {Object} graphic.mark.stroke
  * @property {Number} graphic.opacity
- * @property {Number} graphic.size
- * @property {Number} graphic.rotation
+ * @property {Expression} graphic.size
+ * @property {Expression} graphic.rotation
  * */
