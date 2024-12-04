@@ -30,25 +30,6 @@
     'PropertyIsNull',
     'PropertyIsBetween' ]);
 
-  /**
-   * @private
-   * @param {string} localName
-   *
-   * @return null|string
-   */
-  function getChildTextContent(node, localName) {
-    var propertyNameElement = node
-      .getElementsByTagNameNS(node.namespaceURI, localName)
-      .item(0);
-    if (!propertyNameElement) {
-      return null;
-    }
-    if (propertyNameElement.parentNode !== node) {
-      throw new Error('Expected direct descant');
-    }
-    return propertyNameElement ? propertyNameElement.textContent.trim() : null;
-  }
-
   function isComparison(element) {
     return COMPARISON_NAMES.includes(element.localName);
   }
@@ -64,18 +45,18 @@
    *
    * @return {object}
    */
-  function createComparison(element) {
+  function createComparison(element, addParameterValueProp) {
     if (BINARY_COMPARISON_NAMES.includes(element.localName)) {
-      return createBinaryFilterComparison(element);
+      return createBinaryFilterComparison(element, addParameterValueProp);
     }
     if (element.localName === 'PropertyIsBetween') {
-      return createIsBetweenComparison(element);
+      return createIsBetweenComparison(element, addParameterValueProp);
     }
     if (element.localName === 'PropertyIsNull') {
-      return createIsNullComparison(element);
+      return createIsNullComparison(element, addParameterValueProp);
     }
     if (element.localName === 'PropertyIsLike') {
-      return createIsLikeComparison(element);
+      return createIsLikeComparison(element, addParameterValueProp);
     }
     throw new Error(("Unknown comparison element " + (element.localName)));
   }
@@ -87,18 +68,26 @@
    *
    * @return {object}
    */
-  function createBinaryFilterComparison(element) {
-    var propertyname = getChildTextContent(element, 'PropertyName');
-    var literal = getChildTextContent(element, 'Literal');
-
-    return {
+  function createBinaryFilterComparison(element, addParameterValueProp) {
+    var obj = {
       type: TYPE_COMPARISON,
       operator: element.localName.toLowerCase(),
-      propertyname: propertyname,
-      literal: literal,
       // Match case attribute is true by default, so only make it false if the attribute value equals 'false'.
       matchcase: element.getAttribute('matchCase') !== 'false',
     };
+
+    // Parse child expressions, and add them to the comparison object.
+    var parsed = {};
+    addParameterValueProp(element, parsed, 'expressions', {
+      concatenateLiterals: false,
+    });
+
+    if (parsed.expressions && parsed.expressions.children) {
+      obj.expression1 = parsed.expressions.children[0];
+      obj.expression2 = parsed.expressions.children[1];
+    }
+
+    return obj;
   }
 
   /**
@@ -108,22 +97,15 @@
    *
    * @return {object}
    */
-  function createIsLikeComparison(element) {
-    var propertyname = getChildTextContent(element, 'PropertyName');
-    var literal = getChildTextContent(element, 'Literal');
-
-    return {
-      type: TYPE_COMPARISON,
-      operator: element.localName.toLowerCase(),
-      propertyname: propertyname,
-      literal: literal,
-      wildcard: element.getAttribute('wildCard'),
+  function createIsLikeComparison(element, addParameterValueProp) {
+    // A like comparison is a binary comparison expression, with extra attributes.
+    var obj = createBinaryFilterComparison(element, addParameterValueProp);
+    return Object.assign({}, obj,
+      {wildcard: element.getAttribute('wildCard'),
       singlechar: element.getAttribute('singleChar'),
-      escapechar: element.getAttribute('escapeChar'),
-      // Match case attribute is true by default, so only make it false if the attribute value equals 'false'.
-      matchcase: element.getAttribute('matchCase') !== 'false',
-    };
+      escapechar: element.getAttribute('escapeChar')});
   }
+
   /**
    * factory for element type PropertyIsNullType
    * @private
@@ -131,13 +113,16 @@
    *
    * @return {object}
    */
-  function createIsNullComparison(element) {
-    var propertyname = getChildTextContent(element, 'PropertyName');
+  function createIsNullComparison(element, addParameterValueProp) {
+    var parsed = {};
+    addParameterValueProp(element, parsed, 'expressions', {
+      concatenateLiterals: false,
+    });
 
     return {
       type: TYPE_COMPARISON,
       operator: element.localName.toLowerCase(),
-      propertyname: propertyname,
+      expression: parsed.expressions,
     };
   }
   /**
@@ -147,19 +132,28 @@
    *
    * @return {object}
    */
-  function createIsBetweenComparison(element) {
-    var propertyname = getChildTextContent(element, 'PropertyName');
-    var lowerboundary = getChildTextContent(element, 'LowerBoundary');
-    var upperboundary = getChildTextContent(element, 'UpperBoundary');
-    return {
+  function createIsBetweenComparison(element, addParameterValueProp) {
+    var obj = {
       type: TYPE_COMPARISON,
       operator: element.localName.toLowerCase(),
-      lowerboundary: lowerboundary,
-      upperboundary: upperboundary,
-      propertyname: propertyname,
       // Match case attribute is true by default, so only make it false if the attribute value equals 'false'.
       matchcase: element.getAttribute('matchCase') !== 'false',
     };
+
+    // Parse child expressions, and add them to the comparison object.
+    var parsed = {};
+    addParameterValueProp(element, parsed, 'expressions', {
+      concatenateLiterals: false,
+    });
+
+    if (parsed.expressions && parsed.expressions.children) {
+      // According to spec, the child elements should be expression, lower boundary, upper boundary.
+      obj.expression = parsed.expressions.children[0];
+      obj.lowerboundary = parsed.expressions.children[1];
+      obj.upperboundary = parsed.expressions.children[2];
+    }
+
+    return obj;
   }
 
   /**
@@ -169,11 +163,17 @@
    *
    * @return {object}
    */
-  function createBinaryLogic(element) {
+  function createBinaryLogic(element, addParameterValueProp) {
     var predicates = [];
     for (var n = element.firstElementChild; n; n = n.nextElementSibling) {
-      if (isComparison(n)) {
-        predicates.push(createComparison(n));
+      if (n && isComparison(n)) {
+        predicates.push(createComparison(n, addParameterValueProp));
+      }
+      if (n && isBinary(n)) {
+        predicates.push(createBinaryLogic(n, addParameterValueProp));
+      }
+      if (n && n.localName.toLowerCase() === 'not') {
+        predicates.push(createUnaryLogic(n, addParameterValueProp));
       }
     }
     return {
@@ -189,14 +189,17 @@
    *
    * @return {object}
    */
-  function createUnaryLogic(element) {
+  function createUnaryLogic(element, addParameterValueProp) {
     var predicate = null;
     var childElement = element.firstElementChild;
     if (childElement && isComparison(childElement)) {
-      predicate = createComparison(childElement);
+      predicate = createComparison(childElement, addParameterValueProp);
     }
     if (childElement && isBinary(childElement)) {
-      predicate = createBinaryLogic(childElement);
+      predicate = createBinaryLogic(childElement, addParameterValueProp);
+    }
+    if (childElement && childElement.localName.toLowerCase() === 'not') {
+      predicate = createUnaryLogic(childElement, addParameterValueProp);
     }
     return {
       type: element.localName.toLowerCase(),
@@ -210,17 +213,17 @@
    *
    * @return {Filter}
    */
-  function createFilter(element) {
+  function createFilter(element, addParameterValueProp) {
     var filter = {};
     for (var n = element.firstElementChild; n; n = n.nextElementSibling) {
       if (isComparison(n)) {
-        filter = createComparison(n);
+        filter = createComparison(n, addParameterValueProp);
       }
       if (isBinary(n)) {
-        filter = createBinaryLogic(n);
+        filter = createBinaryLogic(n, addParameterValueProp);
       }
       if (n.localName.toLowerCase() === 'not') {
-        filter = createUnaryLogic(n);
+        filter = createUnaryLogic(n, addParameterValueProp);
       }
       if (n.localName.toLowerCase() === 'featureid') {
         filter.type = 'featureid';
@@ -232,10 +235,25 @@
   }
 
   /**
+   * Generic expression used in SLDReader objects.
+   * @typedef Expression
+   * @name Expression
+   * @description Modeled after [SvgParameterType](https://schemas.opengis.net/se/1.1.0/Symbolizer.xsd).
+   * Can be either a primitive value (string,integer,boolean), or an object with these properties:
+   * @property {string} type One of 'literal', 'propertyname', or 'function'.
+   * @property {string} [typeHint] Optional type hint, used when evaluating the expression. Defaults to 'string'. Can be 'number'.
+   * @property {any} [value] The primitive type representing the value of a literal expresion,
+   * or a string representing the name of a propertyname expression .
+   * @property {string} [name] Required for function expressions. Contains the function name.
+   * @property {any} [fallbackValue] Optional fallback value when function evaluation returns null.
+   * @property {Array<Expression>} [params] Required array of function parameters for function expressions.
+   */
+
+  /**
    * A filter predicate.
    * @typedef Filter
    * @name Filter
-   * @description [filter operators](http://schemas.opengis.net/filter/1.1.0/filter.xsd), see also
+   * @description [filter operators](https://schemas.opengis.net/filter/2.0/filter.xsd), see also
    * [geoserver](http://docs.geoserver.org/stable/en/user/styling/sld/reference/filters.html)
    * @property {string} type Can be 'comparison', 'and', 'or', 'not', or 'featureid'.
    * @property {Array<string>} [fids] An array of feature id's. Required for type='featureid'.
@@ -248,15 +266,16 @@
    * 'propertyisgreaterthanorequalto',
    * 'propertyislike',
    * 'propertyisbetween'
+   * 'propertyisnull'
    * @property {Filter[]} [predicates] Required for type='and' or type='or'.
    * An array of filter predicates that must all evaluate to true for 'and', or
    * for which at least one must evaluate to true for 'or'.
    * @property {Filter} [predicate] Required for type='not'. A single predicate to negate.
-   * @property {string} [propertyname] Required for type='comparison'.
-   * @property {string} [literal] A literal value to use in a comparison,
-   * required for type='comparison'.
-   * @property {string} [lowerboundary] Lower boundary, required for operator='propertyisbetween'.
-   * @property {string} [upperboundary] Upper boundary, required for operator='propertyisbetween'.
+   * @property {Expression} [expression1] First expression required for boolean comparison filters.
+   * @property {Expression} [expression2] Second expression required for boolean comparison filters.
+   * @property {Expression} [expression] Expression required for unary comparison filters.
+   * @property {Expression} [lowerboundary] Lower boundary expression, required for operator='propertyisbetween'.
+   * @property {Expression} [upperboundary] Upper boundary expression, required for operator='propertyisbetween'.
    * @property {string} [wildcard] Required wildcard character for operator='propertyislike'.
    * @property {string} [singlechar] Required single char match character,
    * required for operator='propertyislike'.
@@ -341,11 +360,14 @@
    * Simplifies array of ogc:Expressions. If all expressions are literals, they will be concatenated into a string.
    * If the array contains only one expression, it will be returned.
    * If it's not an array, return unmodified.
+   * @private
    * @param {Array<OGCExpression>} expressions An array of ogc:Expression objects.
    * @param {string} typeHint Expression type. Choose 'string' or 'number'.
+   * @param {boolean} concatenateLiterals When true, and when all expressions are literals,
+   * concatenate all literal expressions into a single string.
    * @return {Array<OGCExpression>|OGCExpression|string} Simplified version of the expression array.
    */
-  function simplifyChildExpressions(expressions, typeHint) {
+  function simplifyChildExpressions(expressions, typeHint, concatenateLiterals) {
     if (!Array.isArray(expressions)) {
       return expressions;
     }
@@ -361,11 +383,13 @@
       .filter(function (expression) { return expression !== ''; });
 
     // If expression children are all literals, concatenate them into a string.
-    var allLiteral = simplifiedExpressions.every(
-      function (expr) { return typeof expr !== 'object' || expr === null; }
-    );
-    if (allLiteral) {
-      return simplifiedExpressions.join('');
+    if (concatenateLiterals) {
+      var allLiteral = simplifiedExpressions.every(
+        function (expr) { return typeof expr !== 'object' || expr === null; }
+      );
+      if (allLiteral) {
+        return simplifiedExpressions.join('');
+      }
     }
 
     // If expression only has one child, return child instead.
@@ -404,6 +428,8 @@
    * @param {object} [options.skipEmptyNodes] Default true. If true, emtpy (whitespace-only) text nodes will me omitted in the result.
    * @param {object} [options.forceLowerCase] Default true. If true, convert prop name to lower case before adding it to obj.
    * @param {object} [options.typeHint] Default 'string'. When set to 'number', a simple literal value will be converted to a number.
+   * @param {object} [options.concatenateLiterals] Default true. When true, and when all expressions are literals,
+   * concatenate all literal expressions into a single string.
    */
   function addParameterValueProp(node, obj, prop, options) {
     if ( options === void 0 ) options = {};
@@ -412,6 +438,7 @@
       skipEmptyNodes: true,
       forceLowerCase: true,
       typeHint: 'string',
+      concatenateLiterals: true,
     };
 
     var parseOptions = Object.assign({}, defaultParseOptions,
@@ -430,6 +457,54 @@
         childExpression.type = 'propertyname';
         childExpression.typeHint = parseOptions.typeHint;
         childExpression.value = childNode.textContent.trim();
+      } else if (
+        childNode.namespaceURI === 'http://www.opengis.net/ogc' &&
+        childNode.localName === 'Function'
+      ) {
+        var functionName = childNode.getAttribute('name');
+        var fallbackValue = childNode.getAttribute('fallbackValue') || null;
+        childExpression.type = 'function';
+        childExpression.name = functionName;
+        childExpression.fallbackValue = fallbackValue;
+
+        // Parse function parameters.
+        // Parse child expressions, and add them to the comparison object.
+        var parsed = {};
+        addParameterValueProp(childNode, parsed, 'params', {
+          concatenateLiterals: false,
+        });
+        if (Array.isArray(parsed.params.children)) {
+          // Case 0 or more than 1 children.
+          childExpression.params = parsed.params.children;
+        } else {
+          // Special case of 1 parameter.
+          // An array containing one expression is simplified into the expression itself.
+          childExpression.params = [parsed.params];
+        }
+      } else if (
+        childNode.localName === 'Add' ||
+        childNode.localName === 'Sub' ||
+        childNode.localName === 'Mul' ||
+        childNode.localName === 'Div'
+      ) {
+        // Convert mathematical operators to builtin function expressions.
+        childExpression.type = 'function';
+        childExpression.name = "__fe:" + (childNode.localName) + "__";
+        childExpression.typeHint = 'number';
+        // Parse function parameters.
+        // Parse child expressions, and add them to the comparison object.
+        var parsed$1 = {};
+        addParameterValueProp(childNode, parsed$1, 'params', {
+          concatenateLiterals: false,
+        });
+        if (Array.isArray(parsed$1.params.children)) {
+          // Case 0 or more than 1 children.
+          childExpression.params = parsed$1.params.children;
+        } else {
+          // Special case of 1 parameter.
+          // An array containing one expression is simplified into the expression itself.
+          childExpression.params = [parsed$1.params];
+        }
       } else if (childNode.nodeName === '#cdata-section') {
         // Add CDATA section text content untrimmed.
         childExpression.type = 'literal';
@@ -457,7 +532,8 @@
     // For example: if they are all literals --> concatenate into string.
     var simplifiedValue = simplifyChildExpressions(
       childExpressions,
-      parseOptions.typeHint
+      parseOptions.typeHint,
+      parseOptions.concatenateLiterals
     );
 
     // Convert simple string value to number if type hint is number.
@@ -527,7 +603,7 @@
 
   var FilterParsers = {
     Filter: function (element, obj) {
-      obj.filter = createFilter(element);
+      obj.filter = createFilter(element, addParameterValueProp);
     },
     ElseFilter: function (element, obj) {
       obj.elsefilter = true;
@@ -680,8 +756,9 @@
    * @name Rule
    * @description a typedef for Rule to match a feature: {@link http://schemas.opengis.net/se/1.1.0/FeatureStyle.xsd xsd}
    * @property {string} name rule name
-   * @property {Filter[]} [filter]
-   * @property {boolean} [elsefilter]
+   * @property {Filter} [filter] Optional filter expression for the rule.
+   * @property {boolean} [elsefilter] Set this to true when rule has no filter expression
+   * to catch everything not passing any other filter.
    * @property {integer} [minscaledenominator]
    * @property {integer} [maxscaledenominator]
    * @property {PolygonSymbolizer} [polygonsymbolizer]
@@ -695,9 +772,9 @@
    * @description a typedef for [PolygonSymbolizer](http://schemas.opengis.net/se/1.1.0/Symbolizer.xsd), see also
    * [geoserver docs](http://docs.geoserver.org/stable/en/user/styling/sld/reference/polygonsymbolizer.html)
    * @property {Object} fill
-   * @property {array} fill.css one object per CssParameter with props name (camelcased) & value
+   * @property {Object<Expression>} fill.styling one object per SvgParameter with props name (camelCased)
    * @property {Object} stroke
-   * @property {Object[]} stroke.css with camelcased name & value
+   * @property {Object<Expression>} stroke.styling with camelcased name & value
    * */
 
   /**
@@ -706,7 +783,7 @@
    * @description a typedef for [LineSymbolizer](http://schemas.opengis.net/se/1.1.0/Symbolizer.xsd), see also
    * [geoserver docs](http://docs.geoserver.org/stable/en/user/styling/sld/reference/linesymbolizer.html#sld-reference-linesymbolizer)
    * @property {Object} stroke
-   * @property {Object[]} stroke.css one object per CssParameter with props name (camelcased) & value
+   * @property {Object<Expression>} stroke.styling one object per SvgParameter with props name (camelCased)
    * @property {Object} graphicstroke
    * @property {Object} graphicstroke.graphic
    * @property {Object} graphicstroke.graphic.mark
@@ -731,9 +808,189 @@
    * @property {Object} graphic.mark.fill
    * @property {Object} graphic.mark.stroke
    * @property {Number} graphic.opacity
-   * @property {Number} graphic.size
-   * @property {Number} graphic.rotation
+   * @property {Expression} graphic.size
+   * @property {Expression} graphic.rotation
    * */
+
+  // This module contains a global registry of function implementations,
+  // and functions to register new function implementations.
+
+  var FunctionCache = new Map();
+
+  /**
+   * Register a function implementation by name. When evaluating the function, it will be called
+   * with the values of the parameter elements evaluated for a single feature.
+   * If the function returns null, the fallback value given in the SLD function element will be used instead.
+   *
+   * Note: take care of these possible gotcha's in the function implementation.
+   * * The function will be called with the number of parameters given in the SLD function element.
+   *   This number can be different from the expected number of arguments.
+   * * Try to avoid throwing errors from the function implementation and return null if possible.
+   * * Literal values will always be provided as strings. Convert numeric parameters to numbers yourself.
+   * * Geometry valued parameters will be provided as OpenLayers geometry instances. Do not mutate these!
+   * @param {string} functionName Function name.
+   * @param {Function} implementation The function implementation.
+   */
+  function registerFunction(functionName, implementation) {
+    if (typeof implementation !== 'function') {
+      throw new Error('Function implementation is not a function');
+    }
+    FunctionCache[functionName] = implementation;
+  }
+
+  /**
+   * Get a function implementation by name.
+   * @param {string} functionName Function name.
+   * @returns {Function} The function implementation, or null if no function with the given
+   * name has been registered yet.
+   */
+  function getFunction(functionName) {
+    return FunctionCache[functionName] || null;
+  }
+
+  // This module contains an evaluate function that takes an SLD expression and a feature and outputs the value for that feature.
+
+  /**
+   * Check if an expression depends on feature properties.
+   * @private
+   * @param {Expression} expression SLDReader expression object.
+   * @returns {bool} Returns true if the expression depends on feature properties.
+   */
+  function isDynamicExpression(expression) {
+    switch ((expression || {}).type) {
+      case 'expression':
+        // Expressions with all literal child values are already concatenated into a static string,
+        // so any expression that survives that process has at least one non-literal child
+        // and therefore possibly dynamic component.
+        return true;
+      case 'literal':
+        return false;
+      case 'propertyname':
+        return true;
+      case 'function':
+        // Note: assuming function expressions are dynamic is correct in most practical cases.
+        // A more accurate implementation would be that a function expression is static if:
+        // * The function is idempotent. You cannot tell from the implementation, unless the implementor marks it as such.
+        // * All function parameter expressions are static.
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * @private
+   * This function takes an SLD expression and an OL feature and outputs the expression value for that feature.
+   * Constant expressions are returned as-is.
+   * @param {Expression} expression SLD object expression.
+   * @param {ol/feature} feature OpenLayers feature instance.
+   * @param {function} getProperty A function to get a specific property value from a feature.
+   * @param {any} defaultValue Optional default value to use when feature is null.
+   * Signature (feature, propertyName) => property value.
+   */
+  function evaluate(
+    expression,
+    feature,
+    getProperty,
+    defaultValue
+  ) {
+    if ( defaultValue === void 0 ) defaultValue = null;
+
+    // Determine the value of the expression.
+    var value = null;
+
+    var jsType = typeof expression;
+    if (
+      jsType === 'string' ||
+      jsType === 'number' ||
+      jsType === 'undefined' ||
+      jsType === 'boolean' ||
+      expression === null
+    ) {
+      // Expression value equals the expression itself if it's a native javascript type.
+      value = expression;
+    } else if (expression.type === 'literal') {
+      // Take expression value directly from literal type expression.
+      value = expression.value;
+    } else if (expression.type === 'propertyname') {
+      // Expression value is taken from input feature.
+      // If feature is null/undefined, use default value instead.
+      var propertyName = expression.value;
+      if (feature) {
+        // If the property name equals the geometry field name, return the feature geometry.
+        if (
+          typeof feature.getGeometryName === 'function' &&
+          propertyName === feature.getGeometryName()
+        ) {
+          value = feature.getGeometry();
+        } else {
+          value = getProperty(feature, propertyName);
+        }
+      } else {
+        value = defaultValue;
+      }
+    } else if (expression.type === 'expression') {
+      // Expression value is the concatenation of all child expession values.
+      if (expression.children.length === 1) {
+        value = evaluate(
+          expression.children[0],
+          feature,
+          getProperty,
+          defaultValue
+        );
+      } else {
+        // In case of multiple child expressions, concatenate the evaluated child results.
+        var childValues = [];
+        for (var k = 0; k < expression.children.length; k += 1) {
+          childValues.push(
+            // Do not use default values when evaluating children. Only apply default is
+            // the concatenated result is empty.
+            evaluate(expression.children[k], feature, getProperty, null)
+          );
+        }
+        value = childValues.join('');
+      }
+    } else if (expression.type === 'function') {
+      var func = getFunction(expression.name);
+      if (!func) {
+        value = expression.fallbackValue;
+      } else {
+        try {
+          // evaluate parameter expressions.
+          var paramValues = expression.params.map(function (paramExpression) { return evaluate(paramExpression, feature, getProperty); }
+          );
+          value = func.apply(void 0, paramValues);
+        } catch (e) {
+          value = expression.fallbackValue;
+        }
+      }
+    }
+
+    // Do not substitute default value if the value is numeric zero.
+    if (value === 0) {
+      return value;
+    }
+
+    // Check if value is empty/null. If so, return default value.
+    if (
+      value === null ||
+      typeof value === 'undefined' ||
+      value === '' ||
+      Number.isNaN(value)
+    ) {
+      return defaultValue;
+    }
+
+    // Convert value to number if expression is flagged as numeric.
+    if (expression && expression.typeHint === 'number') {
+      value = Number(value);
+      if (Number.isNaN(value)) {
+        return defaultValue;
+      }
+    }
+
+    return value;
+  }
 
   function isNullOrUndefined(value) {
     /* eslint-disable-next-line eqeqeq */
@@ -780,41 +1037,59 @@
     return aString.toLowerCase().localeCompare(bString.toLowerCase());
   }
 
-  function propertyIsLessThan(comparison, value) {
-    if (isNullOrUndefined(value)) {
-      return false;
-    }
-
-    if (isNullOrUndefined(comparison.literal)) {
-      return false;
-    }
-
-    return compare(value, comparison.literal) < 0;
+  function propertyIsNull(comparison, feature, getProperty) {
+    var value = evaluate(comparison.expression, feature, getProperty);
+    return isNullOrUndefined(value);
   }
 
-  function propertyIsGreaterThan(comparison, value) {
-    if (isNullOrUndefined(value)) {
+  function propertyIsLessThan(comparison, feature, getProperty) {
+    var value1 = evaluate(comparison.expression1, feature, getProperty);
+    if (isNullOrUndefined(value1)) {
       return false;
     }
 
-    if (isNullOrUndefined(comparison.literal)) {
+    var value2 = evaluate(comparison.expression2, feature, getProperty);
+    if (isNullOrUndefined(value2)) {
       return false;
     }
 
-    return compare(value, comparison.literal) > 0;
+    return compare(value1, value2) < 0;
   }
 
-  function propertyIsBetween(comparison, value) {
+  function propertyIsGreaterThan(comparison, feature, getProperty) {
+    var value1 = evaluate(comparison.expression1, feature, getProperty);
+    if (isNullOrUndefined(value1)) {
+      return false;
+    }
+
+    var value2 = evaluate(comparison.expression2, feature, getProperty);
+    if (isNullOrUndefined(value2)) {
+      return false;
+    }
+
+    return compare(value1, value2) > 0;
+  }
+
+  function propertyIsBetween(comparison, feature, getProperty) {
+    var value = evaluate(comparison.expression, feature, getProperty);
     if (isNullOrUndefined(value)) {
       return false;
     }
 
-    var lowerBoundary = comparison.lowerboundary;
+    var lowerBoundary = evaluate(
+      comparison.lowerboundary,
+      feature,
+      getProperty
+    );
     if (isNullOrUndefined(lowerBoundary)) {
       return false;
     }
 
-    var upperBoundary = comparison.upperboundary;
+    var upperBoundary = evaluate(
+      comparison.upperboundary,
+      feature,
+      getProperty
+    );
     if (isNullOrUndefined(upperBoundary)) {
       return false;
     }
@@ -824,32 +1099,44 @@
     );
   }
 
-  function propertyIsEqualTo(comparison, value) {
-    if (isNullOrUndefined(value)) {
+  function propertyIsEqualTo(comparison, feature, getProperty) {
+    var value1 = evaluate(comparison.expression1, feature, getProperty);
+    if (isNullOrUndefined(value1)) {
       return false;
     }
 
-    if (isNullOrUndefined(comparison.literal)) {
+    var value2 = evaluate(comparison.expression2, feature, getProperty);
+    if (isNullOrUndefined(value2)) {
       return false;
     }
 
-    if (!comparison.matchcase) {
-      return compare(comparison.literal, value, false) === 0;
+    if (
+      !comparison.matchcase ||
+      typeof value1 === 'boolean' ||
+      typeof value2 === 'boolean'
+    ) {
+      return compare(value1, value2, false) === 0;
     }
 
     /* eslint-disable-next-line eqeqeq */
-    return value == comparison.literal;
+    return value1 == value2;
   }
 
   // Watch out! Null-ish values should not pass propertyIsNotEqualTo,
   // just like in databases.
   // This means that PropertyIsNotEqualTo is not the same as NOT(PropertyIsEqualTo).
-  function propertyIsNotEqualTo(comparison, value) {
-    if (isNullOrUndefined(value)) {
+  function propertyIsNotEqualTo(comparison, feature, getProperty) {
+    var value1 = evaluate(comparison.expression1, feature, getProperty);
+    if (isNullOrUndefined(value1)) {
       return false;
     }
 
-    return !propertyIsEqualTo(comparison, value);
+    var value2 = evaluate(comparison.expression2, feature, getProperty);
+    if (isNullOrUndefined(value2)) {
+      return false;
+    }
+
+    return !propertyIsEqualTo(comparison, feature, getProperty);
   }
 
   /**
@@ -860,10 +1147,14 @@
    * @param {object} getProperty A function with parameters (feature, propertyName) to extract
    * the value of a property from a feature.
    */
-  function propertyIsLike(comparison, value) {
-    var pattern = comparison.literal;
-
+  function propertyIsLike(comparison, feature, getProperty) {
+    var value = evaluate(comparison.expression1, feature, getProperty);
     if (isNullOrUndefined(value)) {
+      return false;
+    }
+
+    var pattern = evaluate(comparison.expression2, feature, getProperty);
+    if (isNullOrUndefined(pattern)) {
       return false;
     }
 
@@ -910,33 +1201,31 @@
    * @return {bool}  does feature fullfill comparison
    */
   function doComparison(comparison, feature, getProperty) {
-    var value = getProperty(feature, comparison.propertyname);
-
     switch (comparison.operator) {
       case 'propertyislessthan':
-        return propertyIsLessThan(comparison, value);
+        return propertyIsLessThan(comparison, feature, getProperty);
       case 'propertyisequalto':
-        return propertyIsEqualTo(comparison, value);
+        return propertyIsEqualTo(comparison, feature, getProperty);
       case 'propertyislessthanorequalto':
         return (
-          propertyIsEqualTo(comparison, value) ||
-          propertyIsLessThan(comparison, value)
+          propertyIsEqualTo(comparison, feature, getProperty) ||
+          propertyIsLessThan(comparison, feature, getProperty)
         );
       case 'propertyisnotequalto':
-        return propertyIsNotEqualTo(comparison, value);
+        return propertyIsNotEqualTo(comparison, feature, getProperty);
       case 'propertyisgreaterthan':
-        return propertyIsGreaterThan(comparison, value);
+        return propertyIsGreaterThan(comparison, feature, getProperty);
       case 'propertyisgreaterthanorequalto':
         return (
-          propertyIsEqualTo(comparison, value) ||
-          propertyIsGreaterThan(comparison, value)
+          propertyIsEqualTo(comparison, feature, getProperty) ||
+          propertyIsGreaterThan(comparison, feature, getProperty)
         );
       case 'propertyisbetween':
-        return propertyIsBetween(comparison, value);
+        return propertyIsBetween(comparison, feature, getProperty);
       case 'propertyisnull':
-        return isNullOrUndefined(value);
+        return propertyIsNull(comparison, feature, getProperty);
       case 'propertyislike':
-        return propertyIsLike(comparison, value);
+        return propertyIsLike(comparison, feature, getProperty);
       default:
         throw new Error(("Unkown comparison operator " + (comparison.operator)));
     }
@@ -1577,7 +1866,7 @@
         color: 'red',
       }),
       points: 4,
-      radius1: 8,
+      radius: 8,
       radius2: 0,
       stroke: new style.Stroke({
         color: 'red',
@@ -1597,11 +1886,11 @@
   });
 
   /**
-   * @private
    * Function to memoize style conversion functions that convert sld symbolizers to OpenLayers style instances.
    * The memoized version of the style converter returns the same OL style instance if the symbolizer is the same object.
    * Uses a WeakMap internally.
    * Note: This only works for constant symbolizers.
+   * @private
    * @param {Function} styleFunction Function that accepts a single symbolizer object and returns the corresponding OpenLayers style object.
    * @returns {Function} The memoized function of the style conversion function.
    */
@@ -1624,8 +1913,8 @@
   }
 
   /**
-   * @private
    * Convert a hex color (like #AABBCC) to an rgba-string.
+   * @private
    * @param  {string} hex   eg #AA00FF
    * @param  {Number} alpha eg 0.5
    * @return {string}       rgba(0,0,0,0)
@@ -1642,6 +1931,7 @@
 
   /**
    * Get color string for OpenLayers. Encodes opacity into color string if it's a number less than 1.
+   * @private
    * @param {string} color Color string, encoded as #AABBCC.
    * @param {number} opacity Opacity. Non-numeric values will be treated as 1.
    * @returns {string} OpenLayers color string.
@@ -1654,8 +1944,8 @@
   }
 
   /**
-   * @private
    * Calculate the center-to-center distance for graphics placed along a line within a GraphicSymbolizer.
+   * @private
    * @param {object} lineSymbolizer SLD line symbolizer object.
    * @param {number} graphicWidth Width of the symbolizer graphic in pixels. This size may be dependent on feature properties,
    * so it has to be supplied separately from the line symbolizer object.
@@ -1684,8 +1974,8 @@
   }
 
   /**
-   * @private
    * Get initial gap size from line symbolizer.
+   * @private
    * @param {object} lineSymbolizer SLD line symbolizer object.
    * @returns {number} Inital gap size. Defaults to 0 if not present.
    */
@@ -1743,7 +2033,7 @@
         return new style.RegularShape({
           fill: fill,
           points: 5,
-          radius1: radius,
+          radius: radius,
           radius2: radius / 2.5,
           stroke: stroke,
           rotation: rotationRadians,
@@ -1753,7 +2043,7 @@
         return new style.RegularShape({
           fill: fill,
           points: 4,
-          radius1: radius,
+          radius: radius,
           radius2: 0,
           stroke:
             stroke ||
@@ -1799,7 +2089,7 @@
           angle: Math.PI / 4,
           fill: fill,
           points: 4,
-          radius1: Math.sqrt(2.0) * radius,
+          radius: Math.sqrt(2.0) * radius,
           radius2: 0,
           stroke:
             stroke ||
@@ -1814,7 +2104,7 @@
         return new style.RegularShape({
           fill: fill,
           points: 4,
-          radius1: radius,
+          radius: radius,
           stroke: stroke,
           rotation: rotationRadians,
         });
@@ -1866,130 +2156,11 @@
           fill: fill,
           points: 4,
           // For square, scale radius so the height of the square equals the given size.
-          radius1: radius * Math.sqrt(2.0),
+          radius: radius * Math.sqrt(2.0),
           stroke: stroke,
           rotation: rotationRadians,
         });
     }
-  }
-
-  // This module contains an evaluate function that takes an SLD expression and a feature and outputs the value for that feature.
-  // Constant expressions are returned as-is.
-
-  /**
-   * Check if an expression depends on feature properties.
-   * @param {object} expression OGC expression object.
-   * @returns {bool} Returns true if the expression depends on feature properties.
-   */
-  function isDynamicExpression(expression) {
-    switch ((expression || {}).type) {
-      case 'expression':
-        // Expressions with all static values are already concatenated into a static string,
-        // so any expression that survives that process has at least one dynamic component.
-        return true;
-      case 'literal':
-        return false;
-      case 'propertyname':
-        return true;
-      case 'function':
-        return true;
-      default:
-        return false;
-    }
-  }
-
-  /**
-   * @private
-   * This function takes an SLD expression and an OL feature and outputs the expression value for that feature.
-   * Constant expressions are returned as-is.
-   * @param {object|string} expression SLD object expression.
-   * @param {ol/feature} feature OpenLayers feature instance.
-   * @param {function} getProperty A function to get a specific property value from a feature.
-   * @param {any} defaultValue Optional default value to use when feature is null.
-   * Signature (feature, propertyName) => property value.
-   */
-  function evaluate(
-    expression,
-    feature,
-    getProperty,
-    defaultValue
-  ) {
-    if ( defaultValue === void 0 ) defaultValue = null;
-
-    // Determine the value of the expression.
-    var value = null;
-
-    var jsType = typeof expression;
-    if (
-      jsType === 'string' ||
-      jsType === 'number' ||
-      jsType === 'undefined' ||
-      expression === null
-    ) {
-      // Expression value equals the expression itself if it's a native javascript type.
-      value = expression;
-    } else if (expression.type === 'literal') {
-      // Take expression value directly from literal type expression.
-      value = expression.value;
-    } else if (expression.type === 'propertyname') {
-      // Expression value is taken from input feature.
-      // If feature is null/undefined, use default value instead.
-      if (feature) {
-        value = getProperty(feature, expression.value);
-      } else {
-        value = defaultValue;
-      }
-    } else if (expression.type === 'expression') {
-      // Expression value is the concatenation of all child expession values.
-      if (expression.children.length === 1) {
-        value = evaluate(
-          expression.children[0],
-          feature,
-          getProperty,
-          defaultValue
-        );
-      } else {
-        // In case of multiple child expressions, concatenate the evaluated child results.
-        var childValues = [];
-        for (var k = 0; k < expression.children.length; k += 1) {
-          childValues.push(
-            // Do not use default values when evaluating children. Only apply default is
-            // the concatenated result is empty.
-            evaluate(expression.children[k], feature, getProperty, null)
-          );
-        }
-        value = childValues.join('');
-      }
-    } else if (expression.type === 'function') {
-      // Todo: evaluate function expression.
-      // For now, return null.
-      value = null;
-    }
-
-    // Do not substitute default value if the value is numeric zero.
-    if (value === 0) {
-      return value;
-    }
-
-    // Check if value is empty/null. If so, return default value.
-    if (
-      value === null ||
-      typeof value === 'undefined' ||
-      value === '' ||
-      Number.isNaN(value)
-    ) {
-      return defaultValue;
-    }
-
-    // Convert value to number if expression is flagged as numeric.
-    if (expression && expression.typeHint === 'number') {
-      value = Number(value);
-      if (Number.isNaN(value)) {
-        return defaultValue;
-      }
-    }
-
-    return value;
   }
 
   /* eslint-disable import/prefer-default-export */
@@ -2075,6 +2246,7 @@
   /**
    * Change OL Style fill properties for dynamic symbolizer style parameters.
    * Modification happens in-place on the given style instance.
+   * @private
    * @param {ol/style/Style} olStyle OL Style instance.
    * @param {object} symbolizer SLD symbolizer object.
    * @param {ol/Feature|GeoJSON} feature OL Feature instance or GeoJSON feature object.
@@ -2123,6 +2295,7 @@
   /**
    * Change OL Style stroke properties for dynamic symbolizer style parameters.
    * Modification happens in-place on the given style instance.
+   * @private
    * @param {ol/style/Style} olStyle OL Style instance.
    * @param {object} symbolizer SLD symbolizer object.
    * @param {ol/Feature|GeoJSON} feature OL Feature instance or GeoJSON feature object.
@@ -2188,6 +2361,7 @@
   /**
    * Change OL Text properties for dynamic symbolizer style parameters.
    * Modification happens in-place on the given style instance.
+   * @private
    * @param {ol/style/Style} olStyle OL Style instance.
    * @param {object} symbolizer SLD symbolizer object.
    * @param {ol/Feature|GeoJSON} feature OL Feature instance or GeoJSON feature object.
@@ -2364,13 +2538,18 @@
 
     // Apply dynamic values to the cached OL style instance before returning it.
 
-    // --- Update dynamic size ---
     var graphic = symbolizer.graphic;
-    var size = graphic.size;
-    if (isDynamicExpression(size)) {
-      var sizeValue =
-        Number(evaluate(size, feature, getProperty)) || DEFAULT_MARK_SIZE;
 
+    // Calculate size and rotation values first.
+    var size = graphic.size;
+    var rotation = graphic.rotation;
+    var sizeValue =
+      Number(evaluate(size, feature, getProperty)) || DEFAULT_MARK_SIZE;
+    var rotationDegrees =
+      Number(evaluate(rotation, feature, getProperty)) || 0.0;
+
+    // --- Update dynamic size ---
+    if (isDynamicExpression(size)) {
       if (graphic.externalgraphic && graphic.externalgraphic.onlineresource) {
         var height = olImage.getSize()[1];
         var scale = sizeValue / height || 1;
@@ -2385,17 +2564,15 @@
           sizeValue,
           // Note: re-use stroke and fill instances for a (small?) performance gain.
           olImage.getStroke(),
-          olImage.getFill()
+          olImage.getFill(),
+          rotationDegrees
         );
         olStyle.setImage(olImage);
       }
     }
 
     // --- Update dynamic rotation ---
-    var rotation = graphic.rotation;
     if (isDynamicExpression(rotation)) {
-      var rotationDegrees =
-        Number(evaluate(rotation, feature, getProperty)) || 0.0;
       // Note: OL angles are in radians.
       var rotationRadians = (Math.PI * rotationDegrees) / 180.0;
       olImage.setRotation(rotationRadians);
@@ -2419,15 +2596,31 @@
 
       if (strokeChanged || fillChanged) {
         // Create a new olImage in order to force a re-render to see the style changes.
-        var sizeValue$1 =
-          Number(evaluate(size, feature, getProperty)) || DEFAULT_MARK_SIZE;
         olImage = getWellKnownSymbol(
           (graphic.mark && graphic.mark.wellknownname) || 'square',
-          sizeValue$1,
+          sizeValue,
           olImage.getStroke(),
-          olImage.getFill()
+          olImage.getFill(),
+          rotationDegrees
         );
         olStyle.setImage(olImage);
+      }
+    }
+
+    // Update displacement
+    var displacement = graphic.displacement;
+    if (displacement) {
+      var displacementx = displacement.displacementx;
+      var displacementy = displacement.displacementy;
+      if (
+        typeof displacementx !== 'undefined' ||
+        typeof displacementy !== 'undefined'
+      ) {
+        var dx = evaluate(displacementx, feature, getProperty) || 0.0;
+        var dy = evaluate(displacementy, feature, getProperty) || 0.0;
+        if (dx !== 0.0 || dy !== 0.0) {
+          olImage.setDisplacement([dx, dy]);
+        }
       }
     }
 
@@ -2451,6 +2644,7 @@
   /**
    * Calculate the angle of a vector in radians clockwise from the positive x-axis.
    * Example: (0,0) -> (1,1) --> -pi/4 radians.
+   * @private
    * @param {Array<number>} p1 Start of the line segment as [x,y].
    * @param {Array<number>} p2 End of the line segment as [x,y].
    * @param {boolean} invertY If true, calculate with Y-axis pointing downwards.
@@ -2988,6 +3182,7 @@
   /**
    * Scale mark graphic fill symbol with given scale factor to improve mark fill rendering.
    * Scale factor will be applied to stroke width depending on the original value for visual fidelity.
+   * @private
    * @param {object} graphicfill GraphicFill symbolizer object.
    * @param {number} scaleFactor Scale factor.
    * @returns {object} A new GraphifFill symbolizer object with scale factor applied.
@@ -3260,7 +3455,8 @@
         ? pointplacement.displacement
         : {};
     var offsetX = evaluate(displacement.displacementx, null, null, 0.0);
-    var offsetY = evaluate(displacement.displacementy, null, null, 0.0);
+    // Positive offsetY shifts the label downwards. Positive displacementY in SLD means shift upwards.
+    var offsetY = -evaluate(displacement.displacementy, null, null, 0.0);
 
     // OpenLayers does not support fractional alignment, so snap the anchor to the most suitable option.
     var anchorpoint = (pointplacement && pointplacement.anchorpoint) || {};
@@ -3763,17 +3959,285 @@
     return olStyles.filter(function (style) { return style !== null; });
   }
 
+  /**
+   *
+   * @param {any} input Input value.
+   * @returns The string representation of the input value.
+   * It will always return a valid string and return an empty string for null and undefined values.
+   * Other types of input will be returned as their type name.
+   */
+  // eslint-disable-next-line import/prefer-default-export
+  function asString(input) {
+    if (input === null) {
+      return '';
+    }
+    var inputType = typeof input;
+    switch (inputType) {
+      case 'string':
+        return input;
+      case 'number':
+      case 'bigint':
+      case 'boolean':
+        return input.toString();
+      case 'undefined':
+        return '';
+      default:
+        // object, function, symbol, bigint, boolean, other?
+        return inputType;
+    }
+  }
+
+  // The functions below are taken from the Geoserver function list.
+  // https://docs.geoserver.org/latest/en/user/filter/function_reference.html#string-functions
+  // Note: implementation details may be different from Geoserver implementations.
+  // SLDReader function parameters are not strictly typed and will convert inputs in a sensible manner.
+
+  /**
+   * Converts the text representation of the input value to lower case.
+   * @private
+   * @param {any} input Input value.
+   * @returns Lower case version of the text representation of the input value.
+   */
+  function strToLowerCase(input) {
+    return asString(input).toLowerCase();
+  }
+
+  /**
+   * Converts the text representation of the input value to upper case.
+   * @private
+   * @param {any} input Input value.
+   * @returns Upper case version of the text representation of the input value.
+   */
+  function strToUpperCase(input) {
+    return asString(input).toUpperCase();
+  }
+
+  /**
+   * Extract a substring from the input text.
+   * @private
+   * @param {any} input Input value.
+   * @param {number} start Integer representing start position to extract beginning with 1;
+   * if start is negative, the return string will begin at the end of the string minus the start value.
+   * @param {number} [length] Optional integer representing length of string to extract;
+   * if length is negative, the return string will omit the given length of characters from the end of the string
+   * @returns {string} The extracted substring.
+   * @example
+   * * qgisSubstr('HELLO WORLD', 3, 5) --> 'LLO W'.
+   * * qgisSubstr('HELLO WORLD', -5) --> 'WORLD'.
+   */
+  function qgisSubstr(input, start, length) {
+    var startIndex = Number(start);
+    var lengthInt = Number(length);
+    if (Number.isNaN(startIndex)) {
+      return '';
+    }
+
+    // Note: implementation specification taken from https://docs.qgis.org/3.28/en/docs/user_manual/expressions/functions_list.html#substr
+    var text = asString(input);
+    if (Number.isNaN(lengthInt)) {
+      if (startIndex > 0) {
+        return text.slice(startIndex - 1);
+      }
+      return text.slice(startIndex);
+    }
+
+    if (lengthInt === 0) {
+      return '';
+    }
+
+    if (startIndex > 0) {
+      if (lengthInt > 0) {
+        return text.slice(startIndex - 1, startIndex - 1 + lengthInt);
+      }
+      return text.slice(startIndex - 1, lengthInt);
+    }
+
+    if (lengthInt > 0) {
+      if (startIndex + lengthInt < 0) {
+        return text.slice(startIndex, startIndex + lengthInt);
+      }
+      return text.slice(startIndex);
+    }
+
+    return text.slice(startIndex, lengthInt);
+  }
+
+  /**
+   * Extract a substring given a begin and end index.
+   * @private
+   * @param {any} input Input value.
+   * @param {number} begin Begin index (0-based).
+   * @param {number} end End index (0-based).
+   * @returns {string} The substring starting at the begin index up to,
+   * but not incuding the character at the end index.
+   * @example
+   * * strSubstring('HELLO', 2, 4) --> 'LL'.
+   */
+  function strSubstring(input, begin, end) {
+    var text = asString(input);
+    var beginIndex = Number(begin);
+    var endIndex = Number(end);
+    if (Number.isNaN(beginIndex) || Number.isNaN(endIndex)) {
+      return '';
+    }
+
+    return text.slice(beginIndex, endIndex);
+  }
+
+  /**
+   * Extract a substring from a begin index until the end.
+   * @private
+   * @param {any} input Input value.
+   * @param {number} begin Begin index (0-based).
+   * Using a negative index -N starts at N characters from the end.
+   * @returns {string} The substring starting at the begin index until the end.
+   * @example
+   * * strSubstringStart('HELLO', 1) --> 'ELLO'.
+   * * strSubstringStart('HELLO', -2) --> 'LO'.
+   */
+  function strSubstringStart(input, begin) {
+    var text = asString(input);
+    var beginIndex = Number(begin);
+    if (Number.isNaN(beginIndex)) {
+      return '';
+    }
+
+    return text.slice(beginIndex);
+  }
+
+  /**
+   * Get the geometry type of an OpenLayers geometry instance.
+   * Calls geom.getType() and returns the result.
+   * See https://openlayers.org/en/latest/apidoc/module-ol_geom_Geometry.html#~Type
+   * for possible values.
+   * @private
+   * @param {ol/geom/x} olGeometry OpenLayers Geometry instance.
+   * @returns {string} The OpenLayers geometry type.
+   */
+  function geometryType(olGeometry) {
+    if (olGeometry && typeof olGeometry.getType === 'function') {
+      return olGeometry.getType();
+    }
+
+    return 'Unknown';
+  }
+
+  /**
+   * Get the dimension of a geometry. Multipart geometries will return the dimension of their separate parts.
+   * @private
+   * @param {ol/geom/x} olGeometry OpenLayers Geometry instance.
+   * @returns {number} The dimension of the geometry. Will return 0 for GeometryCollection or unknown type.
+   */
+  function dimension(olGeometry) {
+    switch (geometryType(olGeometry)) {
+      case 'Point':
+      case 'MultiPoint':
+        return 0;
+      case 'LineString':
+      case 'LinearRing':
+      case 'Circle':
+      case 'MultiLineString':
+        return 1;
+      case 'Polygon':
+      case 'MultiPolygon':
+        return 2;
+      default:
+        return 0;
+    }
+  }
+
+  /**
+   * Determine the type of an OpenLayers geometry. Does not differentiate between multipart and single part.
+   * @private
+   * @param {ol/geom/x} olGeometry OpenLayers Geometry instance.
+   * @returns {string} The geometry type: one of Point, Line, Polygon, or Unknown (geometry collection).
+   */
+  function qgisGeometryType(olGeometry) {
+    switch (geometryType(olGeometry)) {
+      case 'Point':
+      case 'MultiPoint':
+        return 'Point';
+      case 'LineString':
+      case 'LinearRing':
+      case 'Circle':
+      case 'MultiLineString':
+        return 'Line';
+      case 'Polygon':
+      case 'MultiPolygon':
+        return 'Polygon';
+      default:
+        return 'Unknown';
+    }
+  }
+
+  /**
+   * Test if the first argument is the same as any of the other arguments.
+   * Equality is determined by comparing test and candidates as strings.
+   * @private
+   * @param  {...any} inputArgs Input arguments.
+   * @returns {boolean} True if the first argument is the same as any of the other arguments
+   * using string-based comparison.
+   */
+  function stringIn() {
+    var inputArgs = [], len = arguments.length;
+    while ( len-- ) inputArgs[ len ] = arguments[ len ];
+
+    var test = inputArgs[0];
+    var candidates = inputArgs.slice(1);
+    // Compare test with candidates as string.
+    var testString = asString(test);
+    return candidates.some(function (candidate) { return asString(candidate) === testString; });
+  }
+
+  /**
+   * Register all builtin functions at once.
+   * @private
+   */
+  function addBuiltInFunctions() {
+    // QGIS functions
+    registerFunction('lower', strToLowerCase);
+    registerFunction('upper', strToUpperCase);
+    registerFunction('geometry_type', qgisGeometryType);
+    registerFunction('substr', qgisSubstr);
+
+    // Geoserver functions
+    registerFunction('strToLowerCase', strToLowerCase);
+    registerFunction('strToUpperCase', strToUpperCase);
+    registerFunction('strSubstring', strSubstring);
+    registerFunction('strSubstringStart', strSubstringStart);
+    registerFunction('geometryType', geometryType);
+    registerFunction('dimension', dimension);
+    registerFunction('in', stringIn);
+    // Also register in2/in10 as alias for the in function.
+    // This is done for backwards compatibility with older geoservers, which have explicit 'in'
+    // function versions for 2 to 10 parameters.
+    for (var k = 2; k <= 10; k += 1) {
+      registerFunction(("in" + k), stringIn);
+    }
+
+    // Math operators as functions
+    registerFunction('__fe:Add__', function (a, b) { return Number(a) + Number(b); });
+    registerFunction('__fe:Sub__', function (a, b) { return Number(a) - Number(b); });
+    registerFunction('__fe:Mul__', function (a, b) { return Number(a) * Number(b); });
+    registerFunction('__fe:Div__', function (a, b) { return Number(a) / Number(b); });
+  }
+
+  // Add support for a handful of built-in SLD function implementations.
+  addBuiltInFunctions();
+
   exports.OlStyler = OlStyler;
   exports.Reader = Reader;
   exports.categorizeSymbolizers = categorizeSymbolizers;
   exports.createOlStyle = createOlStyle;
   exports.createOlStyleFunction = createOlStyleFunction;
   exports.getByPath = getByPath;
+  exports.getFunction = getFunction;
   exports.getLayer = getLayer;
   exports.getLayerNames = getLayerNames;
   exports.getRuleSymbolizers = getRuleSymbolizers;
   exports.getRules = getRules;
   exports.getStyle = getStyle;
   exports.getStyleNames = getStyleNames;
+  exports.registerFunction = registerFunction;
 
 }));

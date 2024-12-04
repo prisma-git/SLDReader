@@ -1,7 +1,11 @@
-/* global describe it expect beforeEach */
+/* global describe it expect before beforeEach after */
 import OLFormatGeoJSON from 'ol/format/GeoJSON';
+import OLLineString from 'ol/geom/LineString';
 
 import evaluate from '../src/olEvaluator';
+import addBuiltInFunctions from '../src/functions/builtins';
+import { clearFunctionCache } from '../src/functions';
+import { Reader } from '../src';
 
 const geojson = {
   type: 'Feature',
@@ -195,5 +199,88 @@ describe('Expression evaluation', () => {
         ).to.equal('DEFAULT');
       });
     });
+  });
+
+  describe('Function evaluation', () => {
+    before(() => {
+      addBuiltInFunctions();
+    });
+
+    after(() => {
+      clearFunctionCache();
+    });
+
+    it('Evaluate function expression', () => {
+      const filterXml = `<StyledLayerDescriptor  xmlns="http://www.opengis.net/ogc"><Filter>
+        <PropertyIsEqualTo>
+          <Function name="strToLowerCase">
+            <PropertyName>title</PropertyName>
+          </Function>
+          <Literal>nieuwland</Literal>
+        </PropertyIsEqualTo>
+      </Filter></StyledLayerDescriptor>`;
+      const { filter } = Reader(filterXml);
+      const functionExpression = filter.expression1;
+      const result = evaluate(functionExpression, feature, getProperty);
+      expect(result).to.equal('nieuwland');
+    });
+  });
+
+  describe('Geometry-valued expressions', () => {
+    let lineFeature;
+    before(() => {
+      const lineGeoJSON = {
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [0, 0],
+            [1, 1],
+          ],
+        },
+        properties: {},
+      };
+      lineFeature = fmtGeoJSON.readFeature(lineGeoJSON);
+    });
+
+    it('Propertyname expression using geometry field name returns OpenLayers geometry', () => {
+      // Note, 'geometry' is the default geometry field name used by OpenLayers.
+      const expression = {
+        type: 'propertyname',
+        value: 'geometry',
+      };
+      const result = evaluate(expression, lineFeature, getProperty);
+      expect(result instanceof OLLineString).to.be.true;
+      expect(result.getCoordinates()).to.deep.equal([
+        [0, 0],
+        [1, 1],
+      ]);
+    });
+  });
+
+  it('Mathematical operator expressions', () => {
+    // (36 / (8 - 2)) * (4 + 3)
+    const filterXml = `<StyledLayerDescriptor  xmlns="http://www.opengis.net/ogc"><Filter>
+      <PropertyIsEqualTo>
+        <Mul>
+          <Div>
+            <Literal>36</Literal>
+            <Sub>
+              <Literal>8</Literal>
+              <Literal>2</Literal>
+            </Sub>
+          </Div>
+          <Add>
+            <Literal>4</Literal>
+            <Literal>3</Literal>
+          </Add>
+        </Mul>
+        <Literal>42</Literal>
+      </PropertyIsEqualTo>
+    </Filter></StyledLayerDescriptor>`;
+    const { filter } = Reader(filterXml);
+    const mathExpression = filter.expression1;
+    const result = evaluate(mathExpression, null, null);
+    expect(result).to.equal(42);
   });
 });

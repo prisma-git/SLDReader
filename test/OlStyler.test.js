@@ -97,7 +97,7 @@ describe('creates point style', () => {
       {
         graphic: {
           mark: {
-            wellknownname: 'circle',
+            wellknownname: 'star',
             fill: {},
             stroke: {},
           },
@@ -109,12 +109,17 @@ describe('creates point style', () => {
     ],
   };
   it('returns array', () => {
-    const style = OlStyler(styleDescription, getMockOLFeature('Point'));
-    expect(style).to.be.an('array');
+    const styles = OlStyler(styleDescription, getMockOLFeature('Point'));
+    expect(styles).to.be.an('array');
   });
   it('returns style', () => {
-    const style = OlStyler(styleDescription, getMockOLFeature('Point'));
-    expect(style['0']).to.be.an.instanceOf(Style);
+    const [style] = OlStyler(styleDescription, getMockOLFeature('Point'));
+    expect(style).to.be.an.instanceOf(Style);
+  });
+  it('uses radius and radius2 for star-like regular shape', () => {
+    const [style] = OlStyler(styleDescription, getMockOLFeature('Point'));
+    expect(style.getImage().getRadius()).to.equal(5);
+    expect(style.getImage().getRadius2()).to.equal(2);
   });
 });
 
@@ -593,6 +598,8 @@ describe('Dynamic style properties', () => {
       properties: {
         size: 100,
         angle: 42,
+        displacementX: 10,
+        displacementY: 20,
         title: 'This is a test',
       },
     };
@@ -624,6 +631,11 @@ describe('Dynamic style properties', () => {
         expect(style.getImage().getRotation()).to.equal(
           (Math.PI * 42.0) / 180.0
         );
+      });
+
+      it('Reads displacement from feature', () => {
+        const style = styleFunction(pointFeature)[0];
+        expect(style.getImage().getDisplacement()).to.deep.equal([10, 20]);
       });
 
       it('Reads text for label from feature', () => {
@@ -772,6 +784,16 @@ describe('Text symbolizer', () => {
     const textStyle = styleFunction(pointFeature)[0];
     // CDATA whitespace should be kept intact.
     expect(textStyle.getText().getText()).to.equal('Size: 100\nAngle: 42');
+  });
+
+  it('Labal displacement', () => {
+    const sldObject = Reader(textSymbolizerSld);
+    const [featureTypeStyle] = sldObject.layers[0].styles[0].featuretypestyles;
+    const styleFunction = createOlStyleFunction(featureTypeStyle);
+    const textStyle = styleFunction(pointFeature)[0];
+    expect(textStyle.getText().getOffsetX()).to.equal(10);
+    // OpenLayers Y offset is inverted. Negative offset shifts upwards.
+    expect(textStyle.getText().getOffsetY()).to.equal(-20);
   });
 });
 
@@ -1025,6 +1047,10 @@ describe('Styling with dynamic SVG Parameters', () => {
       myStrokeOpacity: 1.0,
       myFillColor: '#646464', // [100, 100, 100]
       myFillOpacity: 0.4,
+      mySize: 14,
+      myAngle: 42,
+      myDisplacementX: 15,
+      myDisplacementY: 45,
     },
   };
 
@@ -1226,6 +1252,16 @@ describe('Styling with dynamic SVG Parameters', () => {
       expect(olStyle.getImage().getFill().getColor()).to.equal(
         'rgba(100, 100, 100, 0.4)'
       );
+    });
+
+    it('Dynamic rotation', () => {
+      const imageRotation = olStyle.getImage().getRotation();
+      const imageRotationDegrees = (180.0 * imageRotation) / Math.PI;
+      expect(imageRotationDegrees).to.equal(42);
+    });
+
+    it('Dynamic displacement', () => {
+      expect(olStyle.getImage().getDisplacement()).to.deep.equal([15, 45]);
     });
   });
 

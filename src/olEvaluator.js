@@ -1,24 +1,30 @@
 // This module contains an evaluate function that takes an SLD expression and a feature and outputs the value for that feature.
 // Constant expressions are returned as-is.
 
-import { LineString } from 'ol/geom';
+import { getFunction } from './functions';
 
 /**
  * Check if an expression depends on feature properties.
- * @param {object} expression OGC expression object.
+ * @private
+ * @param {Expression} expression SLDReader expression object.
  * @returns {bool} Returns true if the expression depends on feature properties.
  */
 export function isDynamicExpression(expression) {
   switch ((expression || {}).type) {
     case 'expression':
-      // Expressions with all static values are already concatenated into a static string,
-      // so any expression that survives that process has at least one dynamic component.
+      // Expressions with all literal child values are already concatenated into a static string,
+      // so any expression that survives that process has at least one non-literal child
+      // and therefore possibly dynamic component.
       return true;
     case 'literal':
       return false;
     case 'propertyname':
       return true;
     case 'function':
+      // Note: assuming function expressions are dynamic is correct in most practical cases.
+      // A more accurate implementation would be that a function expression is static if:
+      // * The function is idempotent. You cannot tell from the implementation, unless the implementor marks it as such.
+      // * All function parameter expressions are static.
       return true;
     default:
       return false;
@@ -29,7 +35,7 @@ export function isDynamicExpression(expression) {
  * @private
  * This function takes an SLD expression and an OL feature and outputs the expression value for that feature.
  * Constant expressions are returned as-is.
- * @param {object|string} expression SLD object expression.
+ * @param {Expression} expression SLD object expression.
  * @param {ol/feature} feature OpenLayers feature instance.
  * @param {function} getProperty A function to get a specific property value from a feature.
  * @param {any} defaultValue Optional default value to use when feature is null.
@@ -49,6 +55,7 @@ export default function evaluate(
     jsType === 'string' ||
     jsType === 'number' ||
     jsType === 'undefined' ||
+    jsType === 'boolean' ||
     expression === null
   ) {
     // Expression value equals the expression itself if it's a native javascript type.
@@ -59,8 +66,17 @@ export default function evaluate(
   } else if (expression.type === 'propertyname') {
     // Expression value is taken from input feature.
     // If feature is null/undefined, use default value instead.
+    const propertyName = expression.value;
     if (feature) {
-      value = getProperty(feature, expression.value);
+      // If the property name equals the geometry field name, return the feature geometry.
+      if (
+        typeof feature.getGeometryName === 'function' &&
+        propertyName === feature.getGeometryName()
+      ) {
+        value = feature.getGeometry();
+      } else {
+        value = getProperty(feature, propertyName);
+      }
     } else {
       value = defaultValue;
     }
@@ -86,25 +102,19 @@ export default function evaluate(
       value = childValues.join('');
     }
   } else if (expression.type === 'function') {
-    // Todo: evaluate function expression.
-    // For now, return null.
-
-    if (feature && expression.function.endangle) {
-      const geometry = feature.getGeometry();
-      if (!geometry || !(geometry instanceof LineString)) {
-        return expression.value;
-      }
-      const coordinates = geometry.getCoordinates();
-      const [start, end] = coordinates.slice(
-        coordinates.length - 2,
-        coordinates.length
-      );
-      const dx = end[1] - start[1];
-      const dy = end[0] - start[0];
-      const rotation = Math.atan2(dy, dx);
-      value = rotation * (180 / Math.PI);
+    const func = getFunction(expression.name);
+    if (!func) {
+      value = expression.fallbackValue;
     } else {
-      value = null;
+      try {
+        // evaluate parameter expressions.
+        const paramValues = expression.params.map(paramExpression =>
+          evaluate(paramExpression, feature, getProperty)
+        );
+        value = func(...paramValues);
+      } catch (e) {
+        value = expression.fallbackValue;
+      }
     }
   }
 
