@@ -96,8 +96,7 @@ function pointStyle(pointsymbolizer) {
 }
 
 const cachedPointStyle = memoizeStyleFunction(pointStyle);
-let originalOnlineResource;
-
+const originalOnlineResources = new Map();
 /**
  * @private
  * Get an OL point style instance for a feature according to a symbolizer.
@@ -117,14 +116,13 @@ function getPointStyle(symbolizer, feature, getProperty) {
     symbolizer.graphic.externalgraphic &&
     symbolizer.graphic.externalgraphic.onlineresource
   ) {
-    if (originalOnlineResource) {
+    if (originalOnlineResources.has(feature.getId())) {
       symbolizer.graphic.externalgraphic.onlineresource =
-        originalOnlineResource;
-      originalOnlineResource = undefined;
+        originalOnlineResources.get(feature.getId());
     }
     const imageUrl = symbolizer.graphic.externalgraphic.onlineresource;
     if (imageUrl.search(/\${(.*?)}/) >= 0) {
-      originalOnlineResource = imageUrl;
+      originalOnlineResources.set(feature.getId(), imageUrl);
       const matches = Array.from(imageUrl.matchAll(/\${(.*?)}/g));
       matches.forEach(match => {
         const property = feature.get(match[1]);
