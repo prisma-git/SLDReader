@@ -1,6 +1,7 @@
 // This module contains an evaluate function that takes an SLD expression and a feature and outputs the value for that feature.
 // Constant expressions are returned as-is.
 
+import { LineString } from 'ol/geom';
 import { getFunction } from './functions';
 
 /**
@@ -103,7 +104,21 @@ export default function evaluate(
     }
   } else if (expression.type === 'function') {
     const func = getFunction(expression.name);
-    if (!func) {
+    if (feature && expression.name === 'endAngle') {
+      const geometry = feature.getGeometry();
+      if (!geometry || !(geometry instanceof LineString)) {
+        value = expression.fallbackValue;
+      }
+      const coordinates = geometry.getCoordinates();
+      const [start, end] = coordinates.slice(
+        coordinates.length - 2,
+        coordinates.length
+      );
+      const dx = end[1] - start[1];
+      const dy = end[0] - start[0];
+      const rotation = Math.atan2(dy, dx);
+      value = rotation * (180 / Math.PI) - 90;
+    } else if (!func) {
       value = expression.fallbackValue;
     } else {
       try {
