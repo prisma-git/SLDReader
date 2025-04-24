@@ -60,6 +60,7 @@ function addPropWithTextContent(node, obj, prop, trimText = false) {
       obj[property] = localizedText.textContent;
       return;
     }
+    node.removeChild(localized);
   }
   if (trimText) {
     obj[property] = node.textContent.trim();
