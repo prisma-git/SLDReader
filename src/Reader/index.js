@@ -54,7 +54,7 @@ function addPropWithTextContent(node, obj, prop, trimText = false) {
   const property = prop.toLowerCase();
   const localized = node.querySelector('Localized');
   if (localized && '$nuxt' in window) {
-    const locale = window.$nuxt.$i18.locale.value;
+    const locale = window.$nuxt.$i18n.locale.value;
     const localizedText = node.querySelector(`Localized[lang=${locale}`);
     if (localizedText) {
       obj[property] = localizedText.textContent;
