@@ -18,7 +18,7 @@ const defaultStyles = [defaultPointStyle];
  * @param {Array<ol/style>} styles Array of OL styles.
  * @param {Array<object>} symbolizers Array of feature symbolizers.
  * @param {ol/feature} feature OpenLayers feature.
- * @param {Function} styleFunction Function for getting the OL style object. Signature (symbolizer, feature) => OL style.
+ * @param {Function} styleFunction Function for getting the OL style object. Signature (symbolizer, feature, getProperty) => OL style(s).
  * @param {Function} getProperty A property getter: (feature, propertyName) => property value.
  */
 function appendStyles(
@@ -30,7 +30,9 @@ function appendStyles(
 ) {
   (symbolizers || []).forEach(symbolizer => {
     const olStyle = styleFunction(symbolizer, feature, getProperty);
-    if (olStyle) {
+    if (Array.isArray(olStyle)) {
+      styles.push(...olStyle);
+    } else if (olStyle) {
       styles.push(olStyle);
     }
   });

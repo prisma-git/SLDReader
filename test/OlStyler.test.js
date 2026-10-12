@@ -26,8 +26,10 @@ import { dynamicLineSymbolizerSld } from './data/dynamic-line-symbolizer.sld';
 import { dynamicPointSymbolizerSld } from './data/dynamic-point-symbolizer.sld';
 import { dynamicTextSymbolizerSld } from './data/dynamic-text-symbolizer.sld';
 import { doubleLineSld } from './data/double-line.sld';
+import { endPointArrowSld } from './data/endpoint-arrow.sld';
 
 import { IMAGE_LOADING, IMAGE_LOADED } from '../src/constants';
+import addBuiltInFunctions from '../src/functions/builtins';
 import {
   clearImageCache,
   clearImageLoaderCache,
@@ -244,6 +246,72 @@ describe('Create OL Style function from SLD feature type style 1', () => {
     expect(() => featureStyle[1].getImage().getRadius())
       .to.not.throw()
       .and.be.equal(2);
+  });
+});
+
+describe('End point arrows', () => {
+  let styleFunction;
+  before(() => {
+    addBuiltInFunctions();
+    const sldObject = Reader(endPointArrowSld);
+    const [featureTypeStyle] = sldObject.layers[0].styles[0].featuretypestyles;
+    styleFunction = createOlStyleFunction(featureTypeStyle);
+  });
+
+  const fmtGeoJSON = new OLFormatGeoJSON();
+
+  it('Renders one rotated arrow at the end of a LineString', () => {
+    const olFeature = fmtGeoJSON.readFeature({
+      type: 'Feature',
+      geometry: {
+        type: 'LineString',
+        coordinates: [
+          [0, 0],
+          [10, 0],
+        ],
+      },
+    });
+    const featureStyle = styleFunction(olFeature, null);
+    expect(featureStyle.length).to.equal(1);
+    expect(featureStyle[0].getGeometry().getCoordinates()).to.deep.equal([
+      10, 0,
+    ]);
+    expect(featureStyle[0].getImage().getRotation()).to.be.closeTo(
+      Math.PI / 2,
+      1e-9
+    );
+  });
+
+  it('Renders a rotated arrow at the end of each line of a MultiLineString', () => {
+    const olFeature = fmtGeoJSON.readFeature({
+      type: 'Feature',
+      geometry: {
+        type: 'MultiLineString',
+        coordinates: [
+          [
+            [0, 0],
+            [10, 0],
+          ],
+          [
+            [0, 0],
+            [0, 10],
+          ],
+        ],
+      },
+    });
+    const featureStyle = styleFunction(olFeature, null);
+    expect(featureStyle.length).to.equal(2);
+    expect(featureStyle[0].getGeometry().getCoordinates()).to.deep.equal([
+      10, 0,
+    ]);
+    expect(featureStyle[0].getImage().getRotation()).to.be.closeTo(
+      Math.PI / 2,
+      1e-9
+    );
+    expect(featureStyle[1].getGeometry().getCoordinates()).to.deep.equal([
+      0, 10,
+    ]);
+    expect(featureStyle[1].getImage().getRotation()).to.be.closeTo(0, 1e-9);
   });
 });
 

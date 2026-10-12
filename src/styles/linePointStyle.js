@@ -23,10 +23,14 @@ function getLineMidpoint(geometry) {
  * Get an OL point style instance for a line feature according to a symbolizer.
  * The style will render a point on the middle of the line.
  * @param {object} symbolizer SLD symbolizer object.
+ * For a MultiLineString with an endPoint geometry function, one style per line string is
+ * returned, each placed at the end of its line string with its own rotation (e.g. endAngle).
+ * @param {object} symbolizer SLD symbolizer object.
  * @param {ol/Feature} feature OpenLayers Feature.
- * @returns {ol/Style} OpenLayers style instance.
+ * @param {Function} getProperty A property getter: (feature, propertyName) => property value.
+ * @returns {ol/Style|Array<ol/Style>} OpenLayers style instance(s).
  */
-function getLinePointStyle(symbolizer, feature) {
+function getLinePointStyle(symbolizer, feature, getProperty) {
   if (typeof feature.getGeometry !== 'function') {
     return null;
   }
@@ -39,14 +43,28 @@ function getLinePointStyle(symbolizer, feature) {
   let pointStyle = null;
   const geomType = geom.getType();
   if (geomType === 'LineString') {
-    pointStyle = getPointStyle(symbolizer, feature);
+    pointStyle = getPointStyle(symbolizer, feature, getProperty);
     if (!symbolizer.geometry) {
       pointStyle.setGeometry(new Point(getLineMidpoint(geom)));
     }
   } else if (geomType === 'MultiLineString') {
     const lineStrings = geom.getLineStrings();
+    const geometryFunction =
+      symbolizer.geometry && symbolizer.geometry.function;
+    if (geometryFunction && geometryFunction.endpoint) {
+      return lineStrings
+        .filter(lineString => lineString.getCoordinates().length > 0)
+        .map(lineString => {
+          // Evaluate the symbolizer against each line string separately, so that
+          // geometry dependent expressions (endPoint, endAngle) apply per line string.
+          const partFeature = Object.create(feature);
+          partFeature.getGeometry = () => lineString;
+          // getPointStyle returns a shared cached style instance, so clone it per part.
+          return getPointStyle(symbolizer, partFeature, getProperty).clone();
+        });
+    }
     const multiPointCoords = lineStrings.map(getLineMidpoint);
-    pointStyle = getPointStyle(symbolizer, feature);
+    pointStyle = getPointStyle(symbolizer, feature, getProperty);
     pointStyle.setGeometry(new MultiPoint(multiPointCoords));
   }
 

@@ -1,8 +1,35 @@
 // This module contains an evaluate function that takes an SLD expression and a feature and outputs the value for that feature.
 // Constant expressions are returned as-is.
 
-import { LineString } from 'ol/geom';
+import { LineString, MultiLineString } from 'ol/geom';
 import { getFunction } from './functions';
+
+/**
+ * @private
+ * Get the rotation in degrees of the last segment of a (multi)line geometry.
+ * For a MultiLineString the last line string is used.
+ * @param {ol/geom/Geometry} geometry OpenLayers geometry.
+ * @returns {number|null} Rotation in degrees, or null if it cannot be determined.
+ */
+function getEndAngle(geometry) {
+  let lineString = geometry;
+  if (geometry instanceof MultiLineString) {
+    const lineStrings = geometry.getLineStrings();
+    lineString = lineStrings[lineStrings.length - 1];
+  }
+  if (!(lineString instanceof LineString)) {
+    return null;
+  }
+  const coordinates = lineString.getCoordinates();
+  if (coordinates.length < 2) {
+    return null;
+  }
+  const [start, end] = coordinates.slice(coordinates.length - 2);
+  const dx = end[1] - start[1];
+  const dy = end[0] - start[0];
+  const rotation = Math.atan2(dy, dx);
+  return rotation * (180 / Math.PI) - 90;
+}
 
 /**
  * Check if an expression depends on feature properties.
@@ -105,19 +132,8 @@ export default function evaluate(
   } else if (expression.type === 'function') {
     const func = getFunction(expression.name);
     if (feature && expression.name === 'endAngle') {
-      const geometry = feature.getGeometry();
-      if (!geometry || !(geometry instanceof LineString)) {
-        value = expression.fallbackValue;
-      }
-      const coordinates = geometry.getCoordinates();
-      const [start, end] = coordinates.slice(
-        coordinates.length - 2,
-        coordinates.length
-      );
-      const dx = end[1] - start[1];
-      const dy = end[0] - start[0];
-      const rotation = Math.atan2(dy, dx);
-      value = rotation * (180 / Math.PI) - 90;
+      const endAngle = getEndAngle(feature.getGeometry());
+      value = endAngle === null ? expression.fallbackValue : endAngle;
     } else if (!func) {
       value = expression.fallbackValue;
     } else {
